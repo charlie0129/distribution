@@ -126,6 +126,7 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	if err != nil {
 		return err
 	}
+	defer bw.Close()
 
 	// Serving client and storing locally over same fetching request.
 	// This can prevent a redundant blob fetching.
