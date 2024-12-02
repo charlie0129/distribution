@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"net/http"
+	"reflect"
 	"strconv"
 	"sync"
 	"time"
@@ -29,7 +30,7 @@ type proxyBlobStore struct {
 var _ distribution.BlobStore = &proxyBlobStore{}
 
 // inflight tracks currently downloading blobs
-var inflight = make(map[digest.Digest]struct{})
+var inflight = make(map[digest.Digest]chan struct{})
 
 // mu protects inflight
 var mu sync.Mutex
@@ -95,23 +96,31 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	}
 
 	mu.Lock()
-	_, ok := inflight[dgst]
+	ch, ok := inflight[dgst]
 	if ok {
 		// If the blob has been serving in other requests.
 		// Will return the blob from the remote store directly.
 		// TODO Maybe we could reuse the these blobs are serving remotely and caching locally.
 		mu.Unlock()
-		_, err := pbs.copyContent(ctx, dgst, w, w.Header())
-		return err
+		dcontext.GetLogger(ctx).Infof("waiting other proxy request finish")
+		<-ch
+		return pbs.ServeBlob(ctx, w, r, dgst)
+		//_, err := pbs.copyContent(ctx, dgst, w, w.Header())
+		//return err
 	}
-	inflight[dgst] = struct{}{}
+	inflight[dgst] = make(chan struct{}, 1)
 	mu.Unlock()
 
 	defer func() {
 		mu.Lock()
+		if _ch, _ok := inflight[dgst]; _ok {
+			close(_ch)
+		}
 		delete(inflight, dgst)
 		mu.Unlock()
 	}()
+
+	dcontext.GetLogger(ctx).Infof("localStore[%s]: %+v", reflect.TypeOf(pbs.localStore), pbs.localStore)
 
 	bw, err := pbs.localStore.Create(ctx)
 	if err != nil {
