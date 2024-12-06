@@ -5,13 +5,13 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/docs.yml
-      - dockerfiles/docs.Dockerfile
-      - docs/**
+#  push:
+#    branches:
+#      - main
+#    paths:
+#      - .github/workflows/docs.yml
+#      - dockerfiles/docs.Dockerfile
+#      - docs/**
   workflow_dispatch:
 
 jobs:

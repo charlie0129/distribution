@@ -5,8 +5,9 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  - pull_request
-  - push
+#  - pull_request
+#  - push
+  workflow_dispatch: {}
 
 permissions:
   contents: read # to fetch code (actions/checkout)

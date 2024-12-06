@@ -1,11 +1,12 @@
 name: Scorecards supply-chain security
 on:
   # Only the default branch is supported.
-  branch_protection_rule:
-  schedule:
-    - cron: '26 0 * * 0'
-  push:
-    branches: [ "main" ]
+#  branch_protection_rule:
+#  schedule:
+#    - cron: '26 0 * * 0'
+#  push:
+#    branches: [ "main" ]
+  workflow_dispatch: {}
 
 # Declare default permissions as read only.
 permissions: read-all
@@ -57,4 +58,3 @@ jobs:
         uses: github/codeql-action/upload-sarif@a895f2e1b5e62f11af85a45bee736f4e3901a87e # tag=v2.22.12
         with:
           sarif_file: results.sarif
-

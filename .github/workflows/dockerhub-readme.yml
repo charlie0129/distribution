@@ -5,12 +5,13 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - 'main'
-    paths:
-      - '.github/workflows/dockerhub-readme.yml'
-      - 'docs/dockerhub.md'
+#  push:
+#    branches:
+#      - 'main'
+#    paths:
+#      - '.github/workflows/dockerhub-readme.yml'
+#      - 'docs/dockerhub.md'
+  workflow_dispatch: {}
 
 env:
   DOCKERHUB_SLUG: distribution/distribution

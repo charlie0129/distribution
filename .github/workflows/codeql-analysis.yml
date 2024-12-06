@@ -5,15 +5,16 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  schedule:
-    - cron: '0 12 * * 6'
-  push:
-    branches:
-      - 'main'
-      - 'release/*'
-    tags:
-      - 'v*'
-  pull_request:
+#  schedule:
+#    - cron: '0 12 * * 6'
+#  push:
+#    branches:
+#      - 'main'
+#      - 'release/*'
+#    tags:
+#      - 'v*'
+#  pull_request:
+  workflow_dispatch: {}
 
 permissions:
   contents: read # to fetch code (actions/checkout)

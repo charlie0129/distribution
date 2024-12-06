@@ -6,15 +6,16 @@ concurrency:
 
 on:
   push:
-    branches:
-      - 'main'
-      - 'release/*'
+#    branches:
+#      - 'main'
+#      - 'release/*'
     tags:
       - 'v*'
-  pull_request:
+#  pull_request:
+  workflow_dispatch: {}
 
 env:
-  DOCKERHUB_SLUG: distribution/distribution
+  DOCKERHUB_SLUG: charlie0129/distribution
   GHCR_SLUG: ghcr.io/${{ github.repository }}
 
 permissions:

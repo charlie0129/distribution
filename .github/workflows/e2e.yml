@@ -5,10 +5,10 @@ concurrency:
   cancel-in-progress: true
 
 on:
-  push:
-    branches:
-      - 'main'
-      - 'release/*'
+#  push:
+#    branches:
+#      - 'main'
+#      - 'release/*'
   pull_request:
 
 permissions:
