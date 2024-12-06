@@ -2,9 +2,11 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"net/http"
-	"reflect"
+	"os"
+	"path"
 	"strconv"
 	"sync"
 	"time"
@@ -13,10 +15,17 @@ import (
 	v1 "github.com/opencontainers/image-spec/specs-go/v1"
 
 	"github.com/distribution/distribution/v3"
+	"github.com/distribution/distribution/v3/internal/bufferedpipe"
 	"github.com/distribution/distribution/v3/internal/dcontext"
 	"github.com/distribution/distribution/v3/registry/proxy/scheduler"
 	"github.com/distribution/reference"
 )
+
+type inflightBuffer struct {
+	wg   *sync.WaitGroup
+	desc v1.Descriptor
+	pipe *bufferedpipe.BufferedMultiReadPipe
+}
 
 type proxyBlobStore struct {
 	localStore     distribution.BlobStore
@@ -30,7 +39,7 @@ type proxyBlobStore struct {
 var _ distribution.BlobStore = &proxyBlobStore{}
 
 // inflight tracks currently downloading blobs
-var inflight = make(map[digest.Digest]chan struct{})
+var inflight = make(map[digest.Digest]*inflightBuffer)
 
 // mu protects inflight
 var mu sync.Mutex
@@ -42,30 +51,23 @@ func setResponseHeaders(h http.Header, length int64, mediaType string, digest di
 	h.Set("Etag", digest.String())
 }
 
-func (pbs *proxyBlobStore) copyContent(ctx context.Context, dgst digest.Digest, writer io.Writer, h http.Header) (v1.Descriptor, error) {
-	desc, err := pbs.remoteStore.Stat(ctx, dgst)
-	if err != nil {
-		return v1.Descriptor{}, err
-	}
-
-	setResponseHeaders(h, desc.Size, desc.MediaType, dgst)
-
+func (pbs *proxyBlobStore) copyContent(ctx context.Context, dgst digest.Digest, writer io.Writer, desc v1.Descriptor) error {
 	remoteReader, err := pbs.remoteStore.Open(ctx, dgst)
 	if err != nil {
-		return v1.Descriptor{}, err
+		return err
 	}
 
 	defer remoteReader.Close()
 
 	_, err = io.CopyN(writer, remoteReader, desc.Size)
 	if err != nil {
-		return v1.Descriptor{}, err
+		return err
 	}
 
 	proxyMetrics.BlobPull(uint64(desc.Size))
 	proxyMetrics.BlobPush(uint64(desc.Size), false)
 
-	return desc, nil
+	return nil
 }
 
 func (pbs *proxyBlobStore) serveLocal(ctx context.Context, w http.ResponseWriter, r *http.Request, dgst digest.Digest) (bool, error) {
@@ -81,9 +83,11 @@ func (pbs *proxyBlobStore) serveLocal(ctx context.Context, w http.ResponseWriter
 }
 
 func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter, r *http.Request, dgst digest.Digest) error {
+	logger := dcontext.GetLogger(ctx)
+
 	served, err := pbs.serveLocal(ctx, w, r, dgst)
 	if err != nil {
-		dcontext.GetLogger(ctx).Errorf("Error serving blob from local storage: %s", err.Error())
+		logger.Errorf("Error serving blob from local storage: %s", err.Error())
 		return err
 	}
 
@@ -96,60 +100,118 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	}
 
 	mu.Lock()
-	ch, ok := inflight[dgst]
+	inflightBuf, ok := inflight[dgst]
 	if ok {
-		// If the blob has been serving in other requests.
-		// Will return the blob from the remote store directly.
-		// TODO Maybe we could reuse the these blobs are serving remotely and caching locally.
 		mu.Unlock()
-		dcontext.GetLogger(ctx).Infof("waiting other proxy request finish")
-		<-ch
-		return pbs.ServeBlob(ctx, w, r, dgst)
-		//_, err := pbs.copyContent(ctx, dgst, w, w.Header())
-		//return err
+
+		desc := inflightBuf.desc
+		// This reader catches up and follows the progress of the previous download job.
+		reader := inflightBuf.pipe.Reader()
+
+		logger.Infof("Blob %s already downloading. Following the previous download.", dgst)
+
+		// Following other downloads is considered a hit because we are not making a new request to the remote.
+		proxyMetrics.BlobPush(uint64(desc.Size), true)
+
+		setResponseHeaders(w.Header(), desc.Size, desc.MediaType, dgst)
+
+		_, err = io.CopyN(w, reader, desc.Size)
+		if err != nil {
+			return err
+		}
+
+		return nil
 	}
-	inflight[dgst] = make(chan struct{}, 1)
+
+	// Create a new inflight buffer. This file backed buffer will be used to store the blob while it's downloading.
+	// The actual file will be deleted after the download is complete, by fbuf.Close().
+	fbuf, err := bufferedpipe.NewFileBackedBuffer(path.Join(os.TempDir(), dgst.Hex()))
+	if err != nil {
+		mu.Unlock()
+		return fmt.Errorf("failed to create file backed buffer: %v", err)
+	}
+
+	pipe := bufferedpipe.New(fbuf)
+
+	desc, err := pbs.remoteStore.Stat(ctx, dgst)
+	if err != nil {
+		mu.Unlock()
+		return err
+	}
+	setResponseHeaders(w.Header(), desc.Size, desc.MediaType, dgst)
+
+	inflightBuf = &inflightBuffer{
+		desc: desc,
+		pipe: pipe,
+	}
+
+	inflight[dgst] = inflightBuf
 	mu.Unlock()
 
-	defer func() {
-		mu.Lock()
-		if _ch, _ok := inflight[dgst]; _ok {
-			close(_ch)
+	// Start downloading the blob. In a separate goroutine so we can serve the blob while it's downloading.
+	go func() {
+		writer := pipe.Writer()
+
+		defer func() {
+			// Remove the inflight buffer after the download is complete.
+			mu.Lock()
+			writer.Close()
+			// Delete buffer.
+			fbuf.Close()
+			delete(inflight, dgst)
+			mu.Unlock()
+		}()
+
+		bw, err := pbs.localStore.Create(ctx)
+		if err != nil {
+			writer.CloseWithError(err)
+			logger.Errorf("Error creating localStore: %s", err)
+			return
 		}
-		delete(inflight, dgst)
-		mu.Unlock()
+		defer bw.Close()
+
+		logger.Infof("Downloading blob %s", dgst)
+
+		// Write to buffer and local store.
+		multiWriter := io.MultiWriter(writer, bw)
+
+		// Make the download ctx independent of the request ctx so we continue downloading even if the request is cancelled.
+		// TODO: we can let the ctx follow the last cancelled request ctx.
+		err = pbs.copyContent(context.Background(), dgst, multiWriter, desc)
+		if err != nil {
+			writer.CloseWithError(err)
+			logger.Errorf("Error downloading blob %s: %s", dgst, err)
+			return
+		}
+
+		logger.Infof("Downloaded blob %s and committing", dgst)
+
+		// Everything is fine. Commit the blob.
+		_, err = bw.Commit(ctx, desc)
+		if err != nil {
+			writer.CloseWithError(err)
+			logger.Errorf("Error committing blob %s: %s", dgst, err)
+			return
+		}
 	}()
 
-	dcontext.GetLogger(ctx).Infof("localStore[%s]: %+v", reflect.TypeOf(pbs.localStore), pbs.localStore)
-
-	bw, err := pbs.localStore.Create(ctx)
-	if err != nil {
-		return err
-	}
-	defer bw.Close()
-
-	// Serving client and storing locally over same fetching request.
-	// This can prevent a redundant blob fetching.
-	multiWriter := io.MultiWriter(w, bw)
-	desc, err := pbs.copyContent(ctx, dgst, multiWriter, w.Header())
-	if err != nil {
-		return err
-	}
-
-	_, err = bw.Commit(ctx, desc)
+	// This serves the blob that is downloading in the goroutine started above.
+	reader := pipe.Reader()
+	logger.Infof("Following the downloader of blob %s", dgst)
+	_, err = io.CopyN(w, reader, desc.Size)
 	if err != nil {
 		return err
 	}
 
 	blobRef, err := reference.WithDigest(pbs.repositoryName, dgst)
 	if err != nil {
-		dcontext.GetLogger(ctx).Errorf("Error creating reference: %s", err)
+		logger.Errorf("Error creating reference: %s", err)
 		return err
 	}
 
 	if pbs.scheduler != nil && pbs.ttl != nil {
 		if err := pbs.scheduler.AddBlob(blobRef, *pbs.ttl); err != nil {
-			dcontext.GetLogger(ctx).Errorf("Error adding blob: %s", err)
+			logger.Errorf("Error adding blob: %s", err)
 			return err
 		}
 	}
