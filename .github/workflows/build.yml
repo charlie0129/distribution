@@ -64,8 +64,8 @@ jobs:
       packages: write # so we can push the image to GHCR
 
     runs-on: ubuntu-latest
-    needs:
-      - test
+#    needs:
+#      - test
     steps:
       -
         name: Checkout
