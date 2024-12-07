@@ -630,7 +630,7 @@ func (app *App) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		status, ok := ctx.Value("http.response.status").(int)
 		if ok && status >= 200 && status <= 399 {
-			dcontext.GetResponseLogger(r.Context()).Infof("response completed")
+			dcontext.GetResponseLogger(r.Context()).Debugf("response completed")
 		}
 	}()
 
@@ -861,7 +861,7 @@ func (app *App) authorized(w http.ResponseWriter, r *http.Request, context *Cont
 		return err
 	}
 
-	dcontext.GetLogger(ctx).Info("authorized request")
+	dcontext.GetLogger(ctx).Debug("authorized request")
 	// TODO(stevvooe): This pattern needs to be cleaned up a bit. One context
 	// should be replaced by another, rather than replacing the context on a
 	// mutable object.
