@@ -9,7 +9,7 @@ on:
   pull_request:
 
 env:
-  DOCKERHUB_SLUG: distribution/distribution
+  DOCKERHUB_SLUG: charlie0129/distribution
 
 jobs:
   build:
@@ -17,7 +17,7 @@ jobs:
     steps:
       -
         name: Checkout
-        uses: actions/checkout@v2
+        uses: actions/checkout@v4
         with:
           fetch-depth: 0
       -
@@ -52,17 +52,17 @@ jobs:
         uses: docker/bake-action@v1
         with:
           targets: artifact-all
-      -
-        name: Move artifacts
-        run: |
-          mv ./bin/**/* ./bin/
-      -
-        name: Upload artifacts
-        uses: actions/upload-artifact@v2
-        with:
-          name: registry
-          path: ./bin/*
-          if-no-files-found: error
+#      -
+#        name: Move artifacts
+#        run: |
+#          mv ./bin/**/* ./bin/
+#      -
+#        name: Upload artifacts
+#        uses: actions/upload-artifact@v2
+#        with:
+#          name: registry
+#          path: ./bin/*
+#          if-no-files-found: error
       -
         name: Login to DockerHub
         if: github.event_name != 'pull_request'
@@ -79,14 +79,14 @@ jobs:
             ${{ steps.meta.outputs.bake-file }}
           targets: image-all
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
-      -
-        name: GitHub Release
-        uses: softprops/action-gh-release@v1
-        if: startsWith(github.ref, 'refs/tags/')
-        with:
-          draft: true
-          files: |
-            bin/*.tar.gz
-            bin/*.sha256
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+#      -
+#        name: GitHub Release
+#        uses: softprops/action-gh-release@v1
+#        if: startsWith(github.ref, 'refs/tags/')
+#        with:
+#          draft: true
+#          files: |
+#            bin/*.tar.gz
+#            bin/*.sha256
+#        env:
+#          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
