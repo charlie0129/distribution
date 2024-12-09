@@ -108,6 +108,9 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 		// This reader catches up and follows the progress of the previous download job.
 		reader := inflightBuf.pipe.Reader()
 
+		inflightBuf.wg.Add(1)
+		defer inflightBuf.wg.Done()
+
 		logger.Infof("Blob already downloading. Following the previous download: %s", dgst)
 
 		proxyMetrics.BlobPush(uint64(desc.Size))
@@ -140,6 +143,7 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	setResponseHeaders(w, desc.Size, desc.MediaType, dgst)
 
 	inflightBuf = &inflightBuffer{
+		wg:   &sync.WaitGroup{},
 		desc: desc,
 		pipe: pipe,
 	}
@@ -153,19 +157,23 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 		pipeWriter := pipe.Writer()
 
 		defer func() {
-			// Remove the inflight buffer after the download is complete.
 			mu.Lock()
+			// Close the pipe writer to signal the reader that the download is complete.
 			err = pipeWriter.Close()
 			if err != nil {
 				logger.Errorf("Error closing writer: %s", err)
 			}
-			// Delete buffer.
+			// Remove the inflight buffer so requests came later won't use the buffer (instead uses local cache).
+			delete(inflight, dgst)
+			mu.Unlock()
+
+			// However, there might be other clients still reading from the buffer,
+			// so we need to wait for them to finish before closing the file.
+			inflightBuf.wg.Wait()
 			err = fbuf.Close()
 			if err != nil {
 				logger.Errorf("Error closing file backed buffer: %s", err)
 			}
-			delete(inflight, dgst)
-			mu.Unlock()
 		}()
 
 		localWriter, err := pbs.localStore.Create(context.Background())
@@ -216,6 +224,8 @@ func (pbs *proxyBlobStore) ServeBlob(ctx context.Context, w http.ResponseWriter,
 	proxyMetrics.BlobPush(uint64(desc.Size))
 	// This serves the blob that is downloading in the goroutine started above.
 	reader := pipe.Reader()
+	inflightBuf.wg.Add(1)
+	defer inflightBuf.wg.Done()
 	_, err = io.CopyN(w, reader, desc.Size)
 	if err != nil {
 		return err
